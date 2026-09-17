@@ -1,0 +1,1054 @@
+================================================================================
+ATTENDFLOW - MASTER BACKEND PROMPT & MEMORY BANK SPECIFICATION
+================================================================================
+
+> Purpose: This document is the authoritative, self-contained prompt for an AI
+> backend agent (or a human backend team) to build the complete AttendFlow REST API
+> backend and its dedicated Backend Memory Bank. It fully replaces mock-frontend
+> services (VITE_USE_MOCK_API=true) with a real, secure, production-grade API.
+
+> Frontend repo context: C:\webetechies\others\Attendance Management
+> Backend repo should be created as a SEPARATE directory (e.g. attendflow-backend/).
+
+================================================================================
+0. ROLE OF THE BACKEND AGENT
+================================================================================
+You are a Senior Backend Architect and NestJS Developer, working on AttendFlow
+(Employee & Attendance Management System, Indian locale — Delhi/Mumbai/Bangalore
+offices, INR, treat timestamps in Asia/Kolkata).
+
+Your tasks:
+1. Initialize the backend repository `attendflow-backend/` with NestJS + Prisma + SQLite.
+2. Create a `backend-memory-bank/` directory and keep it updated after every phase.
+3. Build the REST API in the 8 phases defined in Section 3.
+4. Implement the §64 geofence final-validation engine as a hard security boundary.
+
+You MUST read these frontend files first to keep API contracts in sync:
+- src/types/index.ts            -> response/domain shapes
+- src/types/enums.ts            -> all enums (BACKEND MUST MATCH THESE EXACTLY)
+- src/services/*.service.ts     -> 16 service files = the API contract the frontend expects
+- src/config/index.ts           -> defaults (defaultOfficeRadius = 500)
+- src/mocks/data/employees.ts   -> 33 employee seed records
+- src/mocks/data/departments.ts -> 5 departments seed
+- src/mocks/data/designations.ts-> 9 designations seed
+- src/mocks/data/teams.ts       -> 5 teams seed
+- src/mocks/data/offices.ts     -> 3 offices with real Delhi/Mumbai/Bangalore coordinates
+- src/mocks/data/shifts.ts      -> 2 shifts seed
+- src/mocks/data/holidays.ts    -> 8 Indian holidays seed
+- src/mocks/data/permissions.ts -> 14 permissions + default role permission sets (ground truth)
+- src/mocks/data/dashboard.ts   -> deterministic org-wide attendance generator
+- Frontend Memory Bank: memory-bank/00-project-brief.md (esp. §64 security), 03-system-patterns.md, 07-api-documentation.md
+
+Hard rules (mirror frontend AGENTS.md):
+- Strict TypeScript everywhere — NO `any`
+- No business logic in controllers — always Controller -> Service -> Repository layers
+- All input validated with Zod DTOs (1:1 with frontend schemas)
+- No hardcoded coordinates, radius, colors, or names in code — from DB / env / config
+- Frontend geolocation is UX-only; backend geofence validation is the FINAL authority (§64)
+- SQLite via Prisma ORM for all persistence; Redis optional (see Section 2)
+- Every data-changing mutation that reads/writes business state writes an AuditLog row
+- Every endpoint returns the standard envelope (Section 5)
+- Swagger /api/docs must always reflect the live contract
+
+================================================================================
+1. LOCKED TECHNOLOGY STACK
+================================================================================
+| Concern             | Choice                                                 |
+|---------------------|--------------------------------------------------------|
+| Runtime             | Node.js 22 LTS + NestJS 11 (TypeScript, strict mode)   |
+| Language            | TypeScript (strict, noUnusedLocals, no `any`)          |
+| ORM / DB            | Prisma ORM on SQLite 3                               |
+| Auth                | JWT: short-lived Access Token (15 min) + opaque Refresh |
+|                     | Token (7 days, single-use rotation, DB-stored)          |
+| Password hashing    | argon2id (e.g. @node-rs/argon2 or argon2)              |
+| Validation          | Zod + nestjs-zod (or class-validator/class-transformer) |
+| Geofence engine     | Custom Haversine spherical distance module             |
+| CSV import          | multer + csv-parse (13-column employee template)       |
+| Docs                | OpenAPI 3.0 + Swagger UI at GET /api/docs              |
+| Rate limiting       | @nestjs/throttler (10 req/10s default per IP)           |
+| Testing             | Jest + Supertest e2e (geofence rejection paths mandatory)|
+
+Env vars (.env / .env.example):
+```
+PORT=3001
+DATABASE_URL="file:./dev.db"
+JWT_ACCESS_SECRET=<random>
+JWT_REFRESH_SECRET=<random>
+JWT_ACCESS_TTL=900            # 15 minutes in seconds
+JWT_REFRESH_TTL=604800        # 7 days in seconds
+ARGON2_MEMORY_COST=65536      # argon2id memory (KiB), default 64 MiB
+ARGON2_TIME_COST=3            # argon2id iterations
+DEFAULT_OFFICE_RADIUS=500      # meters, matches frontend config
+GPS_MAX_ACCURACY=100           # meters, hard geofence guardrail
+TIMEZONE=Asia/Kolkata
+```
+
+Scaffold command for the agent:
+```
+nest new attendflow-backend --package-manager npm --strict
+npx prisma init --datasource-provider sqlite
+```
+
+================================================================================
+2. BACKEND MEMORY BANK SPECIFICATION
+================================================================================
+Create `backend-memory-bank/` in the backend repo with these 8 files. Keep them
+updated at the END of every phase (do not rewrite history — append new phase logs).
+
+```
+backend-memory-bank/
+├── 00-project-brief.md      → Scope, goals, locked stack, security mandates (§64)
+├── 01-product-context.md    → User problems, HR workflows, business rules
+├── 02-active-context.md     → Current phase, active sprint, next endpoints
+├── 03-system-patterns.md    → Layered NestJS architecture (Controller→Service→Repository),
+│                               Prisma patterns, guard/pipe/decorator conventions
+├── 04-tech-context.md       → NestJS/SQLite/Prisma setup, env vars, migration workflow
+├── 05-progress-log.md       → Completed endpoints per phase, test coverage, open tasks
+├── 06-database-schema.md    → ERD, Prisma schema, migration history, seed data
+├── 07-api-specification.md  → Living OpenAPI 3.0 contract (mirrors Section 7)
+└── 08-development-process.md→ Phase sequence table, verification checklist, commit rules
+```
+
+=== Prompt: Backend Agent Memory Bank Initialization (run FIRST) ===
+"""
+You are a Senior Backend Architect. Initialize the backend-memory-bank directory for
+the AttendFlow API project (attendflow-backend/).
+
+Read `BACKEND_PROMPT.txt` from the frontend repo root. Also read:
+- frontend `memory-bank/*.md` (00-project-brief.md §64, 03-system-patterns.md, 07-api-documentation.md)
+- frontend `src/types/index.ts`, `src/types/enums.ts`
+- frontend `src/services/*.service.ts` (all 16 service files)
+
+Create files 00-project-brief.md through 08-development-process.md inside
+backend-memory-bank/. Document the Controller-Service-Repository layering, the Prisma
+SQLite schema (19 models), JWT auth rules, the §64 geofence validation pipeline, and the
+8-phase roadmap verbatim from BACKEND_PROMPT.txt. Keep it concise, factual, and current.
+"""
+
+================================================================================
+3. MULTI-PHASE DEVELOPMENT ROADMAP
+================================================================================
+Every phase MUST finish with: `npm run build` clean, unit/e2e tests green for its
+endpoints, memory bank updated, and Swagger reflecting new routes.
+
+| Phase | Title                            | Core Objectives                                                        | Key Endpoints (all under /api/v1)                       |
+|-------|----------------------------------|------------------------------------------------------------------------|--------------------------------------------------------|
+| 1     | Foundation & Auth                | Project init, Prisma schema+migration, seed, JWT (access/refresh), RBAC| /auth/login, /auth/refresh, /auth/logout, /auth/me     |
+| 2     | Organization Structure           | Org hierarchy CRUD with live counts + manager assignment               | /departments, /designations, /teams, /offices, /shifts, /holidays |
+| 3     | Employee Lifecycle               | Employee CRUD, profile, activate/deactivate, CSV import                | /employees, /employees/:id, /employees/:id/status, /employees/import-csv |
+| 4     | Geo-Attendance Engine (§64)      | Geofence check-in/out, breaks, today/history/monthly computation       | /attendance/check-in, /attendance/check-out, /attendance/start-break, /attendance/end-break, /attendance/today, /attendance/history, /attendance/monthly |
+| 5     | Approvals & Requests             | Attendance corrections engine + leave workflows + balances             | /attendance/corrections*, /leaves/balance, /leaves/history, /leaves/apply, /leaves/:id/approve, /leaves/:id/reject, /leaves/:id/cancel |
+| 6     | Dashboard & Analytics            | Aggregations + Recharts providers + reports engine + CSV export        | /dashboard/overview, /dashboard/trend, /dashboard/department-stats, /dashboard/recent-checkins, /reports/:type |
+| 7     | Communication & RBAC Matrix      | Announcements, notifications, role-permission matrix                   | /announcements*, /notifications*, /roles, /permissions, /roles/:roleId/permissions |
+| 8     | Hardening & Production           | Rate limiting, audit log coverage, security headers, tests, docs       | (hardening across all modules)                          |
+
+=== Per-phase NestJS module map ===
+- Phase 1: AuthModule, UsersModule, PrismaModule, Roles module (guards: JwtAuthGuard, RolesGuard, PermissionGuard)
+- Phase 2: DepartmentsModule, DesignationsModule, TeamsModule, OfficesModule, ShiftsModule, HolidaysModule
+- Phase 3: EmployeesModule (services: employee.service, employee-import.service, file-upload)
+- Phase 4: AttendanceModule (services: geofence.service (Haversine), attendance.service, shift-rules.service)
+- Phase 5: CorrectionsModule, LeavesModule (services: leave-balance.service, correction-engine.service)
+- Phase 6: DashboardModule, ReportsModule (report-gateway.service for CSV export)
+- Phase 7: AnnouncementsModule, NotificationsModule, PermissionsModule (permission matrix service)
+- Phase 8: AuditModule, Throttler wiring, Swagger config, e2e test suite completion
+
+================================================================================
+4. COMPLETE PRISMA SCHEMA (SQLite) — ALL TABLES
+================================================================================
+19 models. Enums mirror frontend `src/types/enums.ts` EXACTLY (Section 4.2).
+Note: SQLite + Prisma supports @db.Date on SQLite provider via DateTime mapped by
+storing ISO date strings at midnight; the API layer serializes dates as "yyyy-MM-dd"
+strings and timestamps as ISO 8601, exactly like the frontend.
+Version note: JSON and enum support on SQLite require Prisma ORM >= 6.2.0.
+IMPORTANT SQLite limitation: scalar lists (`Role[]`, `[]`) are NOT supported on
+SQLite (PostgreSQL/CockroachDB only). Multi-role membership is therefore modelled
+with a `UserRole` join table (same pattern as `RolePermission`), NOT an enum array.
+
+4.1 DATASOURCE / GENERATOR
+--------------------------
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+4.2 ENUMS (match frontend exactly)
+----------------------------------
+enum Role { EMPLOYEE, MANAGER, ADMIN }
+
+enum EmploymentType { FULL_TIME, PART_TIME, CONTRACT, INTERN }
+
+enum EmploymentStatus { ACTIVE, INACTIVE, ON_NOTICE, TERMINATED }
+
+enum AttendanceStatus {
+  PRESENT, LATE, ABSENT, HALF_DAY, LEAVE, HOLIDAY, WEEK_OFF, INCOMPLETE
+}
+
+enum LeaveType { CASUAL, SICK, EARNED, UNPAID, MATERNITY, PATERNITY }
+
+enum LeaveStatus { PENDING, APPROVED, REJECTED, CANCELLED }
+
+enum CorrectionStatus { PENDING, APPROVED, REJECTED }
+
+enum HolidayType { NATIONAL, REGIONAL, COMPANY, OPTIONAL }
+
+enum AnnouncementPriority { LOW, MEDIUM, HIGH, URGENT }
+
+enum NotificationType { LEAVE, ATTENDANCE, ANNOUNCEMENT, GENERAL }
+
+enum Gender { MALE, FEMALE, OTHER }
+
+4.3 MODELS
+----------
+model User {
+  id             String         @id @default(uuid())
+  email          String         @unique                 // login email (== Employee.loginEmail)
+  passwordHash   String
+  role           Role           @default(EMPLOYEE)      // active role
+  isActive       Boolean        @default(true)
+  employee       Employee?
+  refreshTokens  RefreshToken[]
+  notifications  Notification[]
+  auditLogs      AuditLog[]
+  userRoles      UserRole[]                             // all available roles (multi-role support)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}
+
+model UserRole {
+  id     String @id @default(uuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role                     // one row per role; mirrors frontend Employee.roles[]
+
+  @@unique([userId, role])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique                 // store SHA-256 hash of opaque token
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime @default(now())
+  @@index([userId])
+}
+
+model Employee {
+  id               String           @id @default(uuid())
+  employeeId       String           @unique                 // e.g. EMP0001
+  userId           String           @unique
+  user             User             @relation(fields: [userId], references: [id])
+  firstName        String
+  lastName         String
+  businessEmail    String           @unique                 // work email (frontend Employee.email)
+  loginEmail       String           @unique                 // auth email (== User.email; frontend Employee.loginEmail)
+  phone            String?
+  avatarUrl        String?
+  dateOfBirth      DateTime?        @db.Date
+  gender           Gender?
+  address          String?
+  departmentId     String?
+  department       Department?      @relation(fields: [departmentId], references: [id])
+  designationId    String?
+  designation      Designation?     @relation(fields: [designationId], references: [id])
+  teamId           String?
+  team             Team?            @relation("TeamMembers", fields: [teamId], references: [id])
+  managedTeams     Team[]           @relation("TeamManager")
+  managerId        String?
+  manager          Employee?        @relation("ManagerReports", fields: [managerId], references: [id])
+  directReports    Employee[]       @relation("ManagerReports")
+  officeId         String?
+  office           OfficeLocation?  @relation(fields: [officeId], references: [id])
+  shiftId          String?
+  shift            Shift?           @relation(fields: [shiftId], references: [id])
+  joiningDate      DateTime         @db.Date
+  employmentType   EmploymentType   @default(FULL_TIME)
+  employmentStatus EmploymentStatus @default(ACTIVE)
+  accountStatus    String           @default("active")      // "active" | "inactive"
+  emergencyContact Json?                                   // { name?, relationship?, phone? }
+  attendances          Attendance[]
+  correctionRequests   CorrectionRequest[]
+  leaveRequests        LeaveRequest[]
+  leaveBalances        LeaveBalance[]
+  managedDepartments   Department[]  @relation("DepartmentManager")
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([departmentId])
+  @@index([designationId])
+  @@index([managerId])
+  @@index([officeId])
+  @@index([shiftId])
+}
+
+model Department {
+  id           String        @id @default(uuid())
+  name         String        @unique
+  description  String?
+  managerId    String?
+  manager      Employee?     @relation("DepartmentManager", fields: [managerId], references: [id])
+  isActive     Boolean       @default(true)
+  employees    Employee[]
+  designations Designation[]
+  teams        Team[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Designation {
+  id           String         @id @default(uuid())
+  name         String         @unique
+  departmentId String
+  department   Department     @relation(fields: [departmentId], references: [id])
+  level        Int            @default(1)
+  description  String?
+  isActive     Boolean        @default(true)
+  employees    Employee[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+}
+
+model Team {
+  id           String      @id @default(uuid())
+  name         String      @unique
+  departmentId String
+  department   Department  @relation(fields: [departmentId], references: [id])
+  managerId    String?
+  manager      Employee?   @relation("TeamManager", fields: [managerId], references: [id])
+  members      Employee[]  @relation("TeamMembers")
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+}
+
+model OfficeLocation {
+  id           String       @id @default(uuid())
+  name         String       @unique
+  address      String
+  city         String?                 // derived optional — frontend OfficeFormData has no city field
+  latitude     Float
+  longitude    Float
+  radiusMeters Int          @default(500)          // >= 50m enforced
+  timezone     String       @default("Asia/Kolkata")
+  isActive     Boolean      @default(true)
+  employees    Employee[]
+  attendances  Attendance[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+}
+
+model Shift {
+  id                    String    @id @default(uuid())
+  name                  String    @unique
+  startTime             String                       // "HH:MM" 24h
+  endTime               String                       // "HH:MM" 24h, overnight-aware
+  gracePeriodMinutes    Int       @default(15)
+  lateThresholdMinutes  Int       @default(30)
+  earlyCheckoutMinutes  Int       @default(15)
+  minimumWorkingHours   Float     @default(6.0)      // frontend ShiftFormData field
+  breakDurationMinutes  Int       @default(60)
+  isActive              Boolean   @default(true)
+  employees             Employee[]
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
+model Attendance {
+  id                    String           @id @default(uuid())
+  employeeId            String
+  employee              Employee         @relation(fields: [employeeId], references: [id])
+  officeId              String?
+  office                OfficeLocation?  @relation(fields: [officeId], references: [id])
+  date                  DateTime         @db.Date
+  checkIn               DateTime?
+  checkOut              DateTime?
+  status                AttendanceStatus @default(PRESENT)
+  workingHours          Float?           // decimal hours (frontend workingHours)
+  workDurationMinutes   Int              @default(0)
+  breakMinutes          Int              @default(0)
+  isLate                Boolean          @default(false)
+  checkInLat            Float?
+  checkInLng            Float?
+  checkInAccuracy       Float?
+  checkOutLat           Float?
+  checkOutLng           Float?
+  checkOutAccuracy      Float?
+  distanceMeters        Float?           // reported distance from office at check-in
+  notes                 String?
+  breaks                BreakLog[]
+  corrections           CorrectionRequest[]
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+
+  @@unique([employeeId, date])
+  @@index([officeId])
+  @@index([date])
+}
+
+model BreakLog {
+  id              String     @id @default(uuid())
+  attendanceId    String
+  attendance      Attendance @relation(fields: [attendanceId], references: [id], onDelete: Cascade)
+  startTime       DateTime
+  endTime         DateTime?
+  durationMinutes Int        @default(0)
+  createdAt       DateTime   @default(now())
+}
+
+model CorrectionRequest {
+  id                 String           @id @default(uuid())
+  attendanceId       String
+  attendance         Attendance       @relation(fields: [attendanceId], references: [id])
+  employeeId         String
+  employee           Employee         @relation(fields: [employeeId], references: [id])
+  date               DateTime         @db.Date
+  originalCheckIn    DateTime?
+  originalCheckOut   DateTime?
+  correctedCheckIn   DateTime?
+  correctedCheckOut  DateTime?
+  originalStatus     AttendanceStatus
+  correctedStatus    AttendanceStatus
+  reason             String
+  status             CorrectionStatus @default(PENDING)
+  requestedBy        String
+  reviewerId         String?
+  reviewReason       String?
+  reviewedAt         DateTime?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  @@index([status])
+  @@index([employeeId])
+}
+
+model LeaveBalance {
+  id         String    @id @default(uuid())
+  employeeId String
+  employee   Employee  @relation(fields: [employeeId], references: [id])
+  type       LeaveType            // serialized to the frontend as `leaveType`
+  total      Float                // serialized as `total` (frontend LeaveBalance)
+  used       Float     @default(0)
+  pending    Float     @default(0)          // remaining = total - used - pending (derived, not stored)
+  year       Int       @default(2026)
+
+  @@unique([employeeId, type, year])
+}
+
+model LeaveRequest {
+  id            String      @id @default(uuid())
+  employeeId    String
+  employee      Employee    @relation(fields: [employeeId], references: [id])
+  leaveType     LeaveType
+  startDate     DateTime    @db.Date
+  endDate       DateTime    @db.Date
+  days          Float
+  reason        String
+  attachmentUrl String?
+  status        LeaveStatus @default(PENDING)
+  approvedBy    String?
+  approvedAt    DateTime?
+  rejectionReason String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([status])
+  @@index([employeeId])
+}
+
+model Holiday {
+  id          String      @id @default(uuid())
+  name        String      @unique
+  date        DateTime    @db.Date
+  type        HolidayType @default(NATIONAL)
+  isRecurring Boolean     @default(false)
+  description String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model Announcement {
+  id          String               @id @default(uuid())
+  title       String
+  description String
+  priority    AnnouncementPriority @default(MEDIUM)
+  startDate   DateTime             @db.Date
+  endDate     DateTime             @db.Date
+  createdBy   String
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  type      NotificationType @default(GENERAL)
+  isRead    Boolean          @default(false)
+  link      String?
+  createdAt DateTime         @default(now())
+
+  @@index([userId, isRead])
+}
+
+model RolePermission {
+  id           String @id @default(uuid())
+  role         Role
+  permissionId String        // e.g. "employees.create", "attendance.review" (id from Section 4.4)
+  createdAt    DateTime @default(now())
+
+  @@unique([role, permissionId])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  action    String   // "login", "employee.create", "correction.approve", "leave.approve", ...
+  entity    String   // "employee", "department", "attendance", "leave", ...
+  entityId  String?
+  details   String?  // JSON string, no secrets
+  ipAddress String?
+  createdAt DateTime @default(now())   // serialized to the frontend as `timestamp` (AuditLog)
+
+  @@index([entity, entityId])
+}
+
+4.4 ROLE-PERMISSION SEED (ground truth from src/mocks/data/permissions.ts)
+------------------------------------------------------------------------
+14 permissions exactly as the frontend:
+
+employees.view, employees.create, employees.edit, employees.deactivate,
+employees.import, attendance.view, attendance.correct, attendance.review,
+leave.approve, reports.view, reports.export, announcements.manage,
+org.manage, settings.manage
+
+Default sets (frontend defaultPermissionsByRole):
+- ADMIN      = all 14
+- MANAGER    = employees.view, attendance.view, attendance.correct, attendance.review,
+               leave.approve, reports.view
+- EMPLOYEE   = attendance.view
+
+4.5 LEAVE BALANCE SEED RULES (match frontend leave.service.ts)
+-------------------------------------------------------------
+Casual = 12/year, Sick = 10/year, Earned = 15/year, Unpaid = 0 (limit),
+Maternity/Paternity configured per employment rules. Balance derived LIVE from
+LeaveRequest (used/pending) + LeaveBalance totals, via GET /leaves/balance.
+Leave application rules: end >= start, working-day count via business-day diff,
+no overlap with approved/pending, sufficient remaining balance (UNPAID exempt).
+
+4.6 SEED SNAPSHOT (matches frontend mock data)
+----------------------------------------------
+- 5 Departments (Engineering, Marketing, Finance, Sales, Operations)
+- 9 Designations across departments
+- 5 Teams with managers
+- 3 Offices: Delhi (28.516213, 77.073075), Mumbai (19.0676, 72.8708),
+  Bangalore (12.934, 77.6786); radiusMeters = DEFAULT_OFFICE_RADIUS (500)
+- 2 Shifts: General (09:00-18:00), Plus (10:00-19:00) with grace/late/min-hours
+- 33 Employees incl. demo logins:
+    Rahul (employee)  -> rahul.sharma@attendflow.in
+    Priya (manager)   -> priya.sharma@attendflow.in  (availableRoles: [MANAGER, EMPLOYEE])
+    Vikram (admin)    -> vikram.mehta@attendflow.in  (availableRoles: [ADMIN, MANAGER, EMPLOYEE])
+- 8 Indian holidays
+- Demo password for all three: "password" (argon2 hashed in seed)
+
+================================================================================
+5. STANDARD API ENVELOPE & CONVENTIONS
+================================================================================
+Base prefix: /api/v1
+Auth header:  Authorization: Bearer <accessToken>
+Timezone:     Times stored UTC in DB; serialized to client as ISO 8601. Dates as "yyyy-MM-dd".
+
+Success:
+```json
+{
+  "success": true,
+  "data": { },
+  "message": "Operational message (optional)",
+  "meta": { "page": 1, "pageSize": 10, "total": 33, "totalPages": 4 }
+}
+```
+
+Error (consistent codes, machine-readable):
+```json
+{
+  "success": false,
+  "error": {
+    "code": "GEOFENCE_OUTSIDE_RADIUS",
+    "message": "Your current position (650m away) is outside the permitted office radius (500m).",
+    "details": { "distance": 650, "maxAllowed": 500 }
+  }
+}
+```
+
+Canonical error codes to implement in a single global exception filter:
+- VALIDATION_FAILED (400)        -> Zod DTO errors
+- UNAUTHENTICATED (401)
+- FORBIDDEN (403)
+- NOT_FOUND (404)
+- CONFLICT (409)                 -> duplicate email/name, duplicate active check-in
+- GEOFENCE_OUTSIDE_RADIUS (422)
+- GEOFENCE_LOW_ACCURACY (422)
+- ATTENDANCE_STATE_INVALID (422) -> break/check-out order violations
+- LEAVE_BALANCE_INSUFFICIENT (422)
+- LEAVE_OVERLAP (422)
+- LEAVE_REASON_REQUIRED (422)
+- CORRECTION_NO_CHANGE (422)
+- INACTIVE_ACCOUNT (401)
+
+Multiplication by zero risk: none. All monetary/numeric units documented per endpoint.
+
+================================================================================
+6. SECURITY & GEO-FENCE VERIFICATION ENGINE (§64)
+================================================================================
+Frontend geolocation is UX-only. THE BACKEND IS THE FINAL AUTHORITY. Implement a
+GeofenceService with the exact Haversine formula:
+
+```
+function haversineDistance(lat1, lon1, lat2, lon2): number {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat/2) ** 2 +
+            Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)); // meters
+}
+```
+
+CHECK-IN VALIDATION PIPELINE (5 steps, fail-fast, in this order):
+1. USER ACTIVE        -> user exists, user.isActive true, employee exists,
+                         employee.employmentStatus in (ACTIVE, ON_NOTICE).
+2. DUPLICATE          -> no Attendance row for today (employeeId+date) with checkOut == null
+                         (open active session) -> else CONFLICT ATTENDANCE_STATE_INVALID.
+3. GEOFENCE           -> load OfficeLocation by officeId (assigned office).
+                         distance = haversine(location, office).
+                         if distance > office.radiusMeters -> 422 GEOFENCE_OUTSIDE_RADIUS
+                         (retain the computed meters in `details` and store distanceMeters).
+4. ACCURACY GUARDRAIL -> if location.accuracy > GPS_MAX_ACCURACY (>= 100m) -> 422
+                         GEOFENCE_LOW_ACCURACY (weak/mocked GPS guard). The frontend may
+                         pass accuracy 0 when unavailable -> reject with LOW_ACCURACY too.
+5. SHIFT EVALUATION   -> compare check-in timestamp (Asia/Kolkata wall clock on the
+                         attendance `date`) with shift.startTime:
+                         - within startTime .. startTime+gracePeriodMinutes  -> PRESENT, isLate=false
+                         - within startTime+grace .. startTime+lateThreshold  -> LATE  , isLate=true
+                         - after lateThreshold                                -> LATE  (recorded; daily
+                           late-status derived later; a shift-missed day is ABSENT via nightly job)
+                         - before shift start (early check-in) -> INCOMPLETE unless within a
+                           configurable early-window (default 15 min before startTime).
+
+CHECK-OUT VALIDATION:
+- Requires an open Attendance for today (checkOut == null).
+- Optional geofence re-check: if checkOut location provided, validate same radius
+  (soft warn vs hard reject — decide by config GEO_CHECKOUT_ENFORCE=true default).
+- Compute workingHours = (checkOut - checkIn) - breakMinutes; if workingHours >
+  8h mark OT-eligible (report layer).
+
+BREAK VALIDATION:
+- start-break requires open attendance + not already on break.
+- end-break requires BreakLog with endTime == null; only ONE active break at a time.
+- On check-out with an active break, close it first (endTime = checkOut).
+
+NIGHTLY/ON-DEMAND ATTENDANCE STATUS ROLLUP (statusEngine service):
+- Working-day calendar: exclude Sundays (week_off) and Holidays (holiday) for the
+  employee's office/calendar.
+- No open record on a working day -> ABSENT.
+- checkIn exists but no checkOut -> INCOMPLETE.
+- Check shifts, minimumWorkingHours (>= 4h -> full day, <4h -> HALF_DAY) etc.
+- Approved leave on a date -> LEAVE. (leave approval writes/marks attendance row.)
+
+AUDIT + SECURITY:
+- argon2id password hashing; refresh tokens stored hashed (SHA-256), single-use rotation.
+- Rate limit auth endpoints (5/min per IP), global throttler default.
+- Never log or return password fields. Keep secrets only in env.
+- Final validation ALWAYS server-side; never trust frontend `status` inputs.
+
+================================================================================
+7. COMPLETE REST API CONTRACT (all modules)
+================================================================================
+Conventions from Section 5 apply to every endpoint. Roles: A=Admin, M=Manager, E=Employee.
+
+7.1 AUTH  (AuthModule)  [Phase 1]
+-----------------------------------------------------------------
+POST /api/v1/auth/login  [public]
+  body: { email: string, password: string }
+  200 -> { token, refreshToken, user: { id, email, name, role, availableRoles: Role[],
+          employeeId, avatarUrl } }
+  availableRoles = ORDERED UserRole rows for the user (e.g. [MANAGER, EMPLOYEE]),
+  never computed from a scalar list. role = active role.
+  401 -> INVALID_CREDENTIALS ("Invalid email or password"), INACTIVE_ACCOUNT
+  400 -> VALIDATION_FAILED
+  Also logs AuditLog(action="login").
+
+POST /api/v1/auth/refresh  [public]
+  body: { refreshToken: string }
+  200 -> { token }  (rotates stored refresh token; old one revoked)
+  401 -> refresh token invalid/expired/revoked
+
+POST /api/v1/auth/logout  [auth]
+  200 -> { success: true, message: "Logged out successfully" }
+  Revokes current refresh token.
+
+GET /api/v1/auth/me  [auth]
+  200 -> current user payload (same shape as /login user block)
+
+(POST /api/v1/auth/forgot-password and /reset-password are POSPONED — frontend pages
+forgot-password exists but reset-password route is pending. Spec them when needed;
+do NOT block Phase 1. Include stub endpoints returning 501 NOT_IMPLEMENTED if preferred.)
+
+7.2 EMPLOYEES  (EmployeesModule)  [Phase 3]
+-----------------------------------------------------------------
+GET /api/v1/employees  [A, M]
+  query: search, department, team, office, manager (userId), employmentStatus
+         active, page=1, pageSize=10
+  200 -> { data: Employee[], meta: { total, page, pageSize, totalPages } }
+  Employee populated with department{id,name}, designation{id,name}, team{id,name},
+  manager{id,name}, office{id,name,address}, shift{id,name}. Sorted by name asc.
+
+GET /api/v1/employees/:id  [A, M]  (id = uuid or employeeId "EMP0001")
+  200 -> full populated Employee  |  404 NOT_FOUND
+
+GET /api/v1/employees/by-login-email?email=...  [auth]
+  200 -> populated Employee | null  (used by frontend login resolution)
+
+POST /api/v1/employees  [A]  (permission employees.create)
+  body: EmployeeFormData (firstName, lastName, email, phone, gender?, dateOfBirth?,
+        address?, departmentId, designationId, managerId?, officeId, shiftId,
+        joiningDate, employmentType, employmentStatus, role, accountStatus,
+        pass-through of optional teamId)
+  201 -> created Employee (auto employeeId "EMP####"; creates User + leaves link)
+  409 -> DUPLICATE email
+  400 -> VALIDATION_FAILED
+
+PUT /api/v1/employees/:id  [A]  (permission employees.edit)
+  body: Partial<EmployeeFormData>
+  200 -> updated Employee  409 duplicate email  404
+
+PATCH /api/v1/employees/:id/status  [A]  (permission employees.deactivate)
+  body: { isActive: boolean }
+  200 -> { success: true, data: { id, accountStatus } }  (also toggles user.isActive)
+
+POST /api/v1/employees/import-csv  [A]  (permission employees.import)
+  multipart/form-data: file (CSV; 13 columns)
+  columns: Employee ID, First Name, Last Name, Email, Phone, Department, Designation,
+           Manager, Team, Joining Date, Office, Shift, Role
+  200 -> { imported: number, skipped: number, errors: [{ row, message }] }
+  Validates required fields + duplicate emails (within file and store) before insert.
+
+GET /api/v1/employees/:id/attendance?from=YYYY-MM-DD&to=YYYY-MM-DD   [A, M, owner]
+  200 -> Attendance[] for range.
+GET /api/v1/employees/:id/leave-balance   [A, M, owner]
+  200 -> LeaveBalance[] (used by employee detail page).
+
+7.3 ATTENDANCE & GEOFENCE  (AttendanceModule)  [Phase 4]
+-----------------------------------------------------------------
+POST /api/v1/attendance/check-in  [E, M]
+  body: { employeeId, officeId, location: { latitude, longitude, accuracy },
+          timestamp: ISO }
+  201 -> created Attendance with computed status/isLate + distanceMeters
+  Follows Section 6 pipeline. Emits notification? no (frontend toasts from response).
+
+POST /api/v1/attendance/check-out  [E, M]
+  body: { attendanceId, location? , timestamp: ISO }
+  200 -> updated Attendance { checkOut, workingHours, breakMinutes, status }
+
+POST /api/v1/attendance/start-break  [E, M]
+  body: { attendanceId, timestamp }
+  200 -> updated Attendance with active break (frontend starts BreakTimer)
+
+POST /api/v1/attendance/end-break  [E, M]
+  body: { attendanceId, timestamp }
+  200 -> updated Attendance { breakMinutes } (frontend resumes WorkingTimer)
+
+GET /api/v1/attendance/today  [E, M]
+  query: employeeId
+  200 -> Attendance | null (active/latest record for today)
+
+GET /api/v1/attendance/history  [E, M, A(any)]
+  query: employeeId, from=YYYY-MM-DD, to=YYYY-MM-DD
+  200 -> Attendance[] (asc; populated employee + office + breaks)
+
+GET /api/v1/attendance/monthly  [E, M, A(any)]
+  query: employeeId, month=YYYY-MM
+  200 -> { days: Record<"YYYY-MM-DD", Attendance|null>, summary: {
+          present, absent, late, leave, holiday, halfDay, weekOff, totalWorkingDays } }
+  Merges live records, scheduled holidays + Sundays (week_off) like frontend getMonthly.
+
+7.4 ATTENDANCE CORRECTIONS  (CorrectionsModule)  [Phase 5]
+-----------------------------------------------------------------
+GET /api/v1/attendance/corrections  [A, M]
+  query: status (pending|approved|rejected)
+  200 -> CorrectionRequest[] (populated employee; pending first)
+
+GET /api/v1/attendance/correction-records  [A, M]
+  200 -> Attendance[] last 14 days org-wide (for the "request correction" record picker)
+
+POST /api/v1/attendance/corrections  [E, M]  (permission attendance.correct)
+  body: { attendanceId, date, changes: { checkIn?, checkOut?, status? },
+          reason (required), requestedBy }
+  201 -> CorrectionRequest (pending). 422 if no change requested.
+
+POST /api/v1/attendance/corrections/:id/approve  [A, M]  (permission attendance.review)
+  query/body: { reviewerId }
+  200 -> CorrectionRequest approved; ATOMICALLY applies corrected values to Attendance
+         and recomputes workDurationMinutes/status. Audit row written.
+
+POST /api/v1/attendance/corrections/:id/reject  [A, M]  (permission attendance.review)
+  body: { reviewerId, reason? (required by frontend UI) }
+  200 -> CorrectionRequest rejected with reviewReason.
+
+7.5 LEAVES  (LeavesModule)  [Phase 5]
+-----------------------------------------------------------------
+GET /api/v1/leaves/balance  [E, M, A(any)]
+  query: employeeId
+  200 -> [{ leaveType, total, used, pending, remaining }] for current year.
+  remaining = total - used - pending. Derived live from LeaveRequest + LeaveBalance.
+
+GET /api/v1/leaves  [A, M(team-scoped filter=managerId)]  (frontend getAll)
+  query: employeeId?, managerId?, status?
+  200 -> LeaveRequest[] (populated employee) used by admin/team approval lists.
+
+GET /api/v1/leaves/history  [E, M]
+  query: employeeId
+  200 -> LeaveRequest[] user's history.
+
+POST /api/v1/leaves/apply  [E, M]
+  body: { type, startDate, endDate, reason, attachment? }
+  201 -> LeaveRequest (status PENDING). 422 LEAVE_BALANCE_INSUFFICIENT /
+         LEAVE_OVERLAP. Emits Notification(LEAVE) to employee + managers.
+
+POST /api/v1/leaves/:id/approve  [A, M(team)]  (permission leave.approve)
+  body: { approverId }
+  200 -> status APPROVED; decrements/commits leave balance used; marks attendance
+         as LEAVE on covered dates. Notification emitted.
+
+POST /api/v1/leaves/:id/reject  [A, M(team)]  (permission leave.approve)
+  body: { approverId, reason: required }
+  200 -> status REJECTED with rejectionReason. Notification emitted.
+
+POST /api/v1/leaves/:id/cancel  [owner E, M]
+  200 -> CANCELLED (only if still PENDING). Frees pending balance.
+
+7.6 ORGANIZATION STRUCTURE  (Org modules)  [Phase 2]
+-----------------------------------------------------------------
+All entity CRUD follows the same pattern. Roles: create/update/delete -> A; read -> A/M/E.
+
+DEPARTMENTS
+  GET    /api/v1/departments            -> Department[] (live employeeCount, populated manager)
+  POST   /api/v1/departments            { name, description?, managerId? }  409 dup name
+  PUT    /api/v1/departments/:id        Partial                            409 dup name
+  PATCH  /api/v1/departments/:id/status { isActive: boolean }
+  DELETE /api/v1/departments/:id        (block if employees/designations/teams exist)
+
+DESIGNATIONS
+  GET    /api/v1/designations           -> Designation[] (populated department)
+  POST   /api/v1/designations           { name, departmentId, level?, description? } 409 dup
+  PUT    /api/v1/designations/:id
+  PATCH  /api/v1/designations/:id/status{ isActive }
+  DELETE /api/v1/designations/:id
+
+TEAMS
+  GET    /api/v1/teams                  -> Team[] (populated department/manager/members, memberCount)
+  GET    /api/v1/teams/:id
+  POST   /api/v1/teams                  { name, departmentId, managerId }  409 dup name
+  PUT    /api/v1/teams/:id/manager      { managerId }
+  POST   /api/v1/teams/:id/members      { employeeIds: string[] }          (dedup, exclude manager)
+  DELETE /api/v1/teams/:id/members/:employeeId
+  PATCH  /api/v1/teams/:id/status       { isActive }
+  DELETE /api/v1/teams/:id
+
+OFFICES
+  GET    /api/v1/offices                -> OfficeLocation[]
+  POST   /api/v1/offices                { name, address, city, latitude, longitude,
+                                          radiusMeters>=50, timezone? }    409 dup name
+  PUT    /api/v1/offices/:id
+  PATCH  /api/v1/offices/:id/status     { isActive }
+  DELETE /api/v1/offices/:id
+
+SHIFTS
+  GET    /api/v1/shifts                 -> Shift[]
+  POST   /api/v1/shifts                 ShiftFormData (startTime/endTime "HH:MM",
+                                          gracePeriodMinutes, lateThresholdMinutes,
+                                          earlyCheckoutMinutes, minimumWorkingHours,
+                                          breakDurationMinutes)            409 dup name
+  PUT    /api/v1/shifts/:id
+  PATCH  /api/v1/shifts/:id/status      { isActive }
+  DELETE /api/v1/shifts/:id
+
+HOLIDAYS
+  GET    /api/v1/holidays               -> Holiday[] date-sorted
+  POST   /api/v1/holidays               HolidayFormData (name, date, type, isRecurring, description?)
+  PUT    /api/v1/holidays/:id
+  DELETE /api/v1/holidays/:id
+
+7.7 DASHBOARD & REPORTS  (DashboardModule / ReportsModule)  [Phase 6]
+-----------------------------------------------------------------
+GET /api/v1/dashboard/overview  [A, M]
+  200 -> { totalEmployees, presentToday, absentToday, lateToday, onLeaveToday,
+           attendanceRate, trendDelta }
+  For M: scope to manager's direct reports.
+
+GET /api/v1/dashboard/trend?days=14  [A, M]
+  200 -> [{ date, label, present, absent, late, onLeave, rate }]
+
+GET /api/v1/dashboard/department-stats  [A]
+  200 -> [{ department, total, present, absent, late }] (today)
+
+GET /api/v1/dashboard/recent-checkins?limit=10  [A, M]
+  200 -> [{ id, name, designation, time, status }] sorted check-in desc
+
+GET /api/v1/reports/:type  [A, M]
+  type = attendance | monthly-summary | late | absent | leave | overtime
+  query: from, to, month?, department? (id), office? (id), employee? (id), status?
+  200 -> { data: rows[], meta: {...} }
+  - attendance      -> AttendanceReportRow[] incl. office
+  - monthly-summary -> MonthlySummaryRow[] (present/late/absent/leave + hours per employee)
+  - late / absent   -> AttendanceReportRow[] filtered by status
+  - leave           -> LeaveReportRow[]
+  - overtime        -> OvertimeReportRow[] (workingHours > 8, or > shift min hours)
+  Optional: ?format=csv -> same rows served as attachment (Content-Disposition).
+  Permission reports.view; export -> reports.export.
+
+7.8 ANNOUNCEMENTS & NOTIFICATIONS  [Phase 7]
+-----------------------------------------------------------------
+ANNOUNCEMENTS (permission announcements.manage for write)
+  GET    /api/v1/announcements          -> Announcement[] date-sorted desc
+  GET    /api/v1/announcements/active   -> Announcement[] where today in [startDate,endDate]
+  POST   /api/v1/announcements          { title, description, priority, startDate, endDate, createdBy }
+  PUT    /api/v1/announcements/:id
+  DELETE /api/v1/announcements/:id
+
+NOTIFICATIONS
+  GET    /api/v1/notifications?userId=          -> Notification[] desc
+  PATCH  /api/v1/notifications/:id/read         -> updated Notification isRead=true
+  POST   /api/v1/notifications/mark-all-read    { userId } -> count updated
+  GET    /api/v1/notifications/unread-count?userId= -> { count }
+
+7.9 ROLES & PERMISSIONS  (PermissionsModule)  [Phase 7]
+-----------------------------------------------------------------
+GET  /api/v1/roles              -> [{ id, name, description, isSystem, permissions: string[] }]
+GET  /api/v1/permissions        -> Permission[] full catalogue (Section 4.4)
+PUT  /api/v1/roles/:roleId/permissions   body: { permissionIds: string[] }  (permission settings.manage)
+  200 -> updated role. Admin role is system-locked (always all permissions).
+  Backing store: RolePermission rows + runtime role->permission resolution used by
+  PermissionGuard. Frontend `hasPermission` maps 1:1.
+
+================================================================================
+8. AI AGENT PROMPTS — PHASE BY PHASE (copy-paste)
+================================================================================
+Run these in order. After each, update backend-memory-bank/05-progress-log.md.
+
+--- Prompt: Phase 1 (Foundation & Auth) ---
+"Implement AttendFlow backend Phase 1. In attendflow-backend/ (NestJS + Prisma + SQLite):
+1) Apply the full Prisma schema from BACKEND_PROMPT.txt Section 4 (19 models, frontend-matched
+   enums). Run `npx prisma migrate dev --name init` and create a seed script (33 employees,
+   depts, designations, teams, offices with Delhi/Mumbai/Bangalore coords, 2 shifts, 8 holidays,
+   role-permission rows per Section 4.4, demo users Rahul/Priya/Vikram on loginEmail with
+   argon2-hashed 'password').
+2) AuthModule: POST /auth/login, POST /auth/refresh, POST /auth/logout, GET /auth/me.
+   Access token 15m, refresh 7d stored hashed with rotation. availableRoles derived
+   from UserRole rows (SQLite has no scalar lists).
+3) Guards: JwtAuthGuard (global), RolesGuard, PermissionGuard backed by RolePermission.
+4) Global exception filter emitting the Section 5 error envelope; Zod validation pipes.
+5) GET /auth/me returns user block matching frontend authSlice contract.
+Exit: build clean, e2e tests for login/refresh/logout/me and account-deactivated path.
+Update backend-memory-bank/05-progress-log.md."
+
+--- Prompt: Phase 2 (Organization Structure) ---
+"Implement AttendFlow backend Phase 2: DepartmentsModule, DesignationsModule,
+TeamsModule, OfficesModule, ShiftsModule, HolidaysModule per BACKEND_PROMPT.txt section 7.6.
+- Controllers thin, Services own logic, Prisma Service repositories for reads.
+- Live derived fields: department.employeeCount, team.memberCount, populated relations.
+- Unique-name conflicts -> 409 CONFLICT; delete guards when children exist.
+Exit: all org CRUD e2e tested; Swagger shows org routes. Update memory bank."
+
+--- Prompt: Phase 3 (Employee Lifecycle) ---
+"Implement AttendFlow backend Phase 3: EmployeesModule per BACKEND_PROMPT.txt 7.2.
+- GET/POST/PUT/PATCH-status on /employees with filters + pagination + name sort.
+- Auto employeeId EMP####; duplicate email -> 409; create also creates linked User.
+- GET /employees/by-login-email for auth resolution; GET :id/attendance and
+  GET :id/leave-balance.
+- POST /employees/import-csv with multer + csv-parse (13 columns), transactional,
+  returning { imported, skipped, errors:[{row,message}] }.
+Exit: build clean; import e2e with a malformed CSV; memory bank update."
+
+--- Prompt: Phase 4 (Geo-Attendance Engine / §64) ---
+"Implement AttendFlow backend Phase 4: AttendanceModule per BACKEND_PROMPT.txt
+sections 6 & 7.3. Build GeofenceService with Haversine and the 5-step check-in pipeline
+(active user -> duplicate open session -> office radius -> GPS accuracy <= 100m ->
+shift grace/late evaluation). Implement check-in, check-out, start-break, end-break,
+today, history, monthly (with holidays + Sundays merged). Build statusEngine for
+nightly rollup (ABSENT/INCOMPLETE/HALF_DAY/LEAVE/WEEK_OFF/HOLIDAY).
+Write unit tests for Haversine + geofence boundary cases (exactly at radius, beyond,
+low accuracy) and e2e reject-path tests. Exit: all green; memory bank update."
+
+--- Prompt: Phase 5 (Corrections & Leaves) ---
+"Implement AttendFlow backend Phase 5 per BACKEND_PROMPT.txt 7.4 & 7.5.
+- CorrectionsModule: GET correction-records + GET/POST corrections, approve applies
+  changes atomically + recomputes duration/status, reject with reason.
+- LeavesModule: balance (live derivation), apply (overlap + balance rules, business-day
+  count), approve/reject/cancel, notifications on each transition; approve marks
+  Attendance as LEAVE for covered dates.
+- Audit rows for approve/reject actions. Exit: e2e for insufficient balance + overlap +
+  correction no-change. Memory bank update."
+
+--- Prompt: Phase 6 (Dashboard & Reports) ---
+"Implement AttendFlow backend Phase 6 per BACKEND_PROMPT.txt 7.7.
+- DashboardModule: overview / trend?days=14 / department-stats / recent-checkins;
+  manager scoping to direct reports.
+- ReportsModule: six types (attendance, monthly-summary, late, absent, leave, overtime)
+  with from/to/month/department/office/employee/status filters; data matches rows the
+  frontend report.service.ts expects; optional format=csv streaming.
+- Permission guards reports.view / reports.export. Exit: dashboard numbers match a
+  seeded fixture; memory bank update."
+
+--- Prompt: Phase 7 (Announcements, Notifications, RBAC Matrix) ---
+"Implement AttendFlow backend Phase 7 per BACKEND_PROMPT.txt 7.8 & 7.9.
+- Announcements CRUD + active filter.
+- Notifications feed + read + mark-all-read + unread-count; notification creation on
+  leave/correction events.
+- Permission matrix: GET /roles, GET /permissions, PUT /roles/:roleId/permissions
+  (admin locked); PermissionGuard enforces. Exit: matrix update persists and switches
+  live behavior; memory bank update."
+
+--- Prompt: Phase 8 (Hardening & Production) ---
+"Implement AttendFlow backend Phase 8: production hardening.
+- @nestjs/throttler limits (auth 5/min, global 10/10s), helmet, CORS allowlist.
+- Ensure AuditLog recorded on every business mutation (Rule: service-level interceptor
+  or explicit audit.service calls) with ipAddress.
+- Full Swagger/OpenAPI completeness + seed reset script + Dockerfile + CI job
+  (lint -> tsc -> build -> test:unit -> test:e2e).
+- Run `npx prisma migrate deploy` in prod; add SQLite back-up note.
+Exit: all tests green, Swagger live, audit log assertions in e2e. Memory bank update."
+
+================================================================================
+9. ACCEPTANCE CRITERIA (global)
+================================================================================
+- No `any`; `npm run build` exits 0.
+- All routes under /api/v1 with the Section 5 envelope.
+- Enums byte-for-byte identical to frontend src/types/enums.ts.
+- Frontend service methods (16 services) all have a matching backend endpoint.
+- Check-in rejects: outside radius (422 GEOFENCE_OUTSIDE_RADIUS), low accuracy
+  (422 GEOFENCE_LOW_ACCURACY), duplicate active session (409), inactive user (401).
+- Refresh token rotation works; revoked tokens unusable.
+- Every leave/correction/employee mutation is audited.
+- Swagger UI renders the complete live API at /api/docs.
+- backend-memory-bank/ fully initialized and updated at each phase end.
+
+================================================================================
+10. SEED / DEMO LOGIN MATRIX (mirror frontend)
+================================================================================
+| Role    | Login email                     | Available roles    | Password |
+|---------|---------------------------------|--------------------|----------|
+| Admin   | vikram.mehta@attendflow.in      | [ADMIN,MANAGER,EMPLOYEE] | password |
+| Manager | priya.sharma@attendflow.in      | [MANAGER,EMPLOYEE] | password |
+| Employee| rahul.sharma@attendflow.in      | [EMPLOYEE]         | password |
+
+================================================================================
+END OF MASTER BACKEND PROMPT — AttendFlow
+================================================================================
