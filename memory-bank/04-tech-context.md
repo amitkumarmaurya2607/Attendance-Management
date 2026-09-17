@@ -23,6 +23,21 @@
 | vite-plugin-pwa | 1.3.0 | PWA — injectManifest SW + web manifest (built from `src/firebase-messaging-sw.ts`) |
 | @vite-pwa/assets-generator | 1.0.4 | One-off PWA icon generation (PNG/ICO from `public/logo.svg`) |
 | react-onesignal | 3.5.6 | OneSignal (legacy/latent — not used by FCM path; kept in deps) |
+| @capacitor/core | 8.x | Capacitor core runtime (mobile wrapper: Android + iOS) |
+| @capacitor/cli | 8.x (dev) | Capacitor CLI — `cap add/sync/open`, `capacitor.config.ts` |
+| @capacitor/android | 8.x | Android platform |
+| @capacitor/ios | 8.x | iOS platform |
+| @capacitor/camera | 8.2.4 | Native camera/gallery capture (new abstraction `src/services/native/camera.ts`) |
+| @capacitor/geolocation | 8.2.2 | Native GPS/permission (new abstraction `src/services/native/location.ts`) |
+| @capacitor/push-notifications | 8.1.2 | Native push (FCM Android / APNs iOS; web keeps FCM SW) |
+| @capacitor/preferences | 8.0.1 | Native KV storage for session tokens (web → localStorage fallback) |
+| @capacitor/network | 8.0.1 | Connectivity detection (OfflineBanner) |
+| @capacitor/app | 8.1.1 | App lifecycle + Android back button + app version |
+| @capacitor/keyboard | 8.0.5 | Keyboard resize behavior (resize: body) |
+| @capacitor/status-bar | 8.0.3 | Status bar style/color |
+| @capacitor/splash-screen | 8.0.2 | Splash screen (#00a884 branding) |
+| React Router native bridges | — | `src/services/native/` modules: `platform.ts`, `version.ts`, `camera.ts`, `location.ts`, `notifications.ts`, `force-update.ts`, `back-button.ts`, `network.ts`, `deep-link.ts` (+ barrel `index.ts`) |
+| `src/services/device.service.ts` | — | Single-device-login id: `getDeviceId()` — UUID stored once via storage abstraction (`attendflow.device-id`) on web + native, single-flight, never cleared on logout; `DEVICE_ID_HEADER = "X-Device-Id"` sent by `request.ts` interceptor on every request; pairs with backend `DeviceSession` + `DEVICE_SESSION_BLOCKED` gate (feature flag) |
 
 **Backend additions** (`Attendance Management-backend`): `firebase-admin` (v13) for FCM server SDK — module-scoped namespaces `firebase-admin/app` + `firebase-admin/messaging` (the `import * as admin` blob lacks `app`/`credential` types in v13). `@nestjs/schedule` — cron infra for the shift-over attendance reminder (`AttendanceReminderService`, `@Cron('*/15 * * * *', { timeZone: 'Asia/Kolkata' })`, registered via `ScheduleModule.forRoot()` in `app.module.ts`). `resend` (v6.28.1) — transactional email for the password-reset OTP (`MailModule`/`MailService`, @Global; dev fallback logs OTP to console when apiKey unset/send fails — never in production).
 

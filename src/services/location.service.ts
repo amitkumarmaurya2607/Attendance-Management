@@ -1,11 +1,13 @@
 import { config } from "@/config";
 import { LocationStatus } from "@/types/enums";
+import { isNativePlatform } from "@/services/native/platform";
+import {
+  getCurrentNativePosition,
+  NativeLocationError,
+  type GeolocationResult,
+} from "@/services/native/location";
 
-export interface GeolocationResult {
-  latitude: number;
-  longitude: number;
-  accuracy: number;
-}
+export type { GeolocationResult } from "@/services/native/location";
 
 export class LocationApiError extends Error {
   readonly status: LocationStatus;
@@ -18,6 +20,20 @@ export class LocationApiError extends Error {
 }
 
 export async function getCurrentPosition(): Promise<GeolocationResult> {
+  if (isNativePlatform()) {
+    try {
+      return await getCurrentNativePosition();
+    } catch (err) {
+      if (err instanceof NativeLocationError) {
+        throw new LocationApiError(err.status, err.message);
+      }
+      throw new LocationApiError(
+        LocationStatus.ERROR,
+        "We couldn't determine your current location. Please try again."
+      );
+    }
+  }
+
   if (!("geolocation" in navigator)) {
     throw new LocationApiError(
       LocationStatus.UNAVAILABLE,

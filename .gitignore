@@ -25,3 +25,11 @@ dist-ssr
 # Environment variables
 .env
 .env.*
+!.env.example
+
+# Capacitor
+android/
+ios/
+.capacitor/
+
+BACKEND_PROMPT.txt

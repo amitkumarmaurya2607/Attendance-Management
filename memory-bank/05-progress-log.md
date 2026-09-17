@@ -1,5 +1,143 @@
 # StaffFlow — Progress Log
 
+## Single Device Login per Day — IMPLEMENTED (2026-09-17)
+Backend feature flag (NestJS, see backend repo memory-bank: `DeviceSession` table,
+`SINGLE_DEVICE_LOGIN_ENABLED`, `DEVICE_SESSION_TIMEZONE`, `DEVICE_SESSION_BLOCKED` 403).
+Frontend changes in this repo:
+- [x] `src/services/device.service.ts` (NEW) — `getDeviceId()`: stored UUID via
+  `storageGet/storageSet` (`attendflow.device-id`), `crypto.randomUUID()` + fallback generator,
+  single-flight (share an in-flight promise, no races); id NEVER cleared by logout. Exports
+  `DEVICE_ID_HEADER = "X-Device-Id"`.
+- [x] `src/services/http/request.ts` — request interceptor now awaits `session.getAccessToken()`
+  and `getDeviceId()` in parallel and sets Authorization + `X-Device-Id` on every request
+  (incl. 401-retry path, which re-runs through the interceptor).
+- [x] `src/services/http/errors.ts` — `DEVICE_SESSION_BLOCKED` added to `ApiErrorCode` union.
+- [x] Verified `npx tsc --noEmit` exit 0; `npm run build` exit 0; `npx cap sync` exit 0.
+- [x] Docs: `CAPACITOR_SETUP.md` §11 "Single device login per day"; memory bank updated.
+Backend e2e: 6 new tests green. (Note: 4 pre-existing suite failures persist — asserts
+`user.availableRoles` which `buildUserBlock` never returns, and shared `dev.db` fixtures — NOT
+caused by this feature.)
+
+## Phases 6–13: Capacitor migration COMPLETED (2026-09-17)
+
+> User prompt: "proceed". Completed the remaining phases of the approved 13-phase Capacitor migration (phases 1–5 were logged below). Verified after each phase: `npx tsc --noEmit` exit 0; final `npm run build` exit 0 and `npx cap sync` exit 0.
+
+### Phase 6 — Secure Storage Abstraction
+- [x] `src/services/storage/secure-storage.ts` (NEW) — `storageGet/Set/Remove`: native → `@capacitor/preferences` (Preferences.get/set/remove), web → `localStorage` with try/catch guards.
+- [x] `src/services/storage/index.ts` (NEW) — barrel.
+- [x] `src/services/http/session.ts` — REWRITTEN to async: `getAccessToken/getRefreshToken/getTokens/setTokens/setAccessToken/clear` all return Promises; token keys unchanged (`attendflow.access-token`/`attendflow.refresh-token`).
+- [x] `src/services/http/request.ts` — request interceptor now `async` (awaits `getAccessToken`); `doRefresh()` awaits `getTokens()/setTokens()/clear()`; 401-retry path awaits `getAccessToken()`.
+- [x] `src/store/slices/authSlice.ts` — `loginUser`, `bootstrapSession` (awaits `getTokens`/`getAccessToken`/`clear`), `logoutUser` (awaits getRefreshToken/clear) all await session.
+- [x] Verified `npx tsc --noEmit` exit 0.
+
+### Phase 7 — App Version & Force Update
+- [x] `src/services/http/endpoints.ts` — added `API.app.version = "/app/version"`.
+- [x] `src/services/native/force-update.ts` (NEW) — `checkForForceUpdate()` (native-only; compares installed version vs backend `{android,ios:{minimumVersion,latestVersion,forceUpdate,storeUrl}}` via `get()`; `compareVersions()`; `openStore()`), `updateInfo` types. Missing endpoint/non-native → skipped silently (no blocking).
+- [x] `src/components/native/ForceUpdateScreen.tsx` (NEW) — full-screen block: installed vs latest version rows + Update Now → store.
+- [x] `src/components/native/ForceUpdateGate.tsx` (NEW) — mounted in `main.tsx` around `<AppRouter>`; renders the block only when `forceUpdate`.
+- [x] Verified `npx tsc --noEmit` exit 0.
+
+### Phase 8 — Android Back Button & Status Bar & Splash
+- [x] `src/services/native/back-button.ts` (NEW) — `subscribeBackButton()` (`App.addListener("backButton")`; `canGoBack` → `window.history.back()`, else `window.confirm` → `onExitConfirmed`) + `exitApp()` (`App.exitApp()`). `PluginListenerHandle` imported from `@capacitor/core` (NOT from @capacitor/app).
+- [x] `src/hooks/useBackButton.ts` (NEW) — mounts/unmounts listener; exits via `exitApp`.
+- [x] `src/components/native/NativeChrome.tsx` (NEW) — mounted once inside `<BrowserRouter>` (AppRouter) before SessionBootstrap: `useBackButton()` + runtime `StatusBar.setBackgroundColor("#00a884")` + `StatusBar.setStyle(Style.Dark)` (v8 exports `Style` enum — string literal `"DARK"` is NOT assignable). Splash screen already config-only (capacitor.config.ts).
+- [x] Verified `npx tsc --noEmit` exit 0.
+
+### Phase 9 — Network Handling & Keyboard
+- [x] `src/services/native/network.ts` (NEW) — `getConnectivity()` + `subscribeConnectivity()` (native `@capacitor/network`; web fallback `navigator.onLine`); `Connectivity { connected, connectionType }`.
+- [x] `src/components/native/OfflineBanner.tsx` (NEW) — sticky top `bg-danger` banner (`safe-area-top`), rendered by NativeChrome on native.
+- [x] Keyboard — handled declaratively in `capacitor.config.ts` (`resize: "body"`, `style: "DARK"`); no runtime code.
+- [x] Verified `npx tsc --noEmit` exit 0.
+
+### Phase 10 — Deep Linking & Routing
+- [x] `src/services/native/deep-link.ts` (NEW) — `parseDeepLink()`, `getLaunchUrl()` (cold start via `App.getLaunchUrl`), `subscribeDeepLinks()` (`App.addListener("appUrlOpen")`).
+- [x] `NativeChrome.tsx` — navigates launch/appUrlOpen URLs through React Router (`navigate(path+search)`), still BrowserRouter.
+- [x] `android/AndroidManifest.xml` — `android:autoVerify` VIEW intent filter (`https://app.staffflow.com`) + `staffflow://open` custom scheme.
+- [x] `ios/Info.plist` — `CFBundleURLTypes` (schema `staffflow`).
+- [x] Verified `npx tsc --noEmit` exit 0.
+
+### Phase 11 — Permissions Configuration
+- [x] `android/AndroidManifest.xml` — `ACCESS_COARSE_LOCATION`, `ACCESS_FINE_LOCATION`, `CAMERA`, `POST_NOTIFICATIONS` + non-required `<uses-feature>` camera/gps.
+- [x] `ios/Info.plist` — `NSCameraUsageDescription`, `NSPhotoLibraryUsageDescription`, `NSLocationWhenInUseUsageDescription`.
+- [x] Verified `npx tsc --noEmit` + `npm run build` + `npx cap sync` exit 0.
+
+### Phase 12 — Build Scripts, .env.example, CAPACITOR_SETUP.md
+- [x] `package.json` — added `cap:sync`, `cap:android`, `cap:ios`, `cap:run:android`, `cap:run:ios`, `cap:doctor`.
+- [x] `.env.example` (NEW) — VITE_APP_NAME, VITE_API_BASE_URL, VITE_GOOGLE_MAPS_API_KEY, VITE_FIREBASE_* (existing `.env` keys).
+- [x] `CAPACITOR_SETUP.md` (NEW) — full ops guide: prerequisites, daily workflow, capacitor.config mapping, FCM/APNs push setup, camera/gallery/location strings + manifest permissions, branding via `@capacitor/assets`, deep-linking (custom scheme + App Links + Universal Links), force-update endpoint contract, release gotchas.
+- [x] `src/services/native/index.ts` (NEW) — final barrel (platform/version/camera/location/notifications/force-update/back-button/network/deep-link).
+
+### Phase 13 — Memory Bank
+- [x] Updated `02-active-context.md` (current focus → migration COMPLETE, phase summaries), `04-tech-context.md` (native modules row), `05-progress-log.md`.
+
+### Notes
+- `@capacitor/core` exports `PluginListenerHandle`; plugin-specific packages DO NOT — import it from `@capacitor/core`.
+- `@capacitor/status-bar` v8 exports `Style` enum (`Style.Dark`); plain string causes `TS2322`.
+- android/ios native edits (manifest, Info.plist) are LOCAL ONLY (folders git-ignored); regeneration after `npx cap add` on a fresh clone requires re-applying them — documented in CAPACITOR_SETUP.md.
+
+## Phase 2: Platform Detection & Native Service Abstractions — COMPLETE (2026-09-17)
+
+### Completed (2026-09-17)
+- [x] `src/services/native/platform.ts` (NEW) — `isNativePlatform()`, `isAndroid()`, `isIOS()`, `isWeb()`, `getPlatform()`, `NativePlatform` type via `@capacitor/core` `Capacitor` API (not UA sniffing).
+- [x] `src/services/native/version.ts` (NEW) — `getAppVersion()` → `AppVersionInfo { version, build, platform, isNative }`; native via `App.getInfo()` (versionName + versionCode on Android, CFBundleShortVersionString + CFBundleVersion on iOS), web fallback to `config.version`.
+- [x] Verified `npx tsc --noEmit` exit 0.
+
+### Notes
+- `build` in `AppInfo` is a **string** (versionCode/CFBundleVersion) — typed as `string | null`.
+- Barrel `src/services/native/index.ts` deferred until all native service modules exist (Phase 7) to avoid dangling imports.
+
+## Phase 5: Push Notifications Native Plugin — COMPLETE (2026-09-17)
+
+### Completed (2026-09-17)
+- [x] `src/services/native/notifications.ts` (NEW) — `registerForNativePush()` (requestPermissions → `PushNotifications.register()` + single-flight; returns `{status:'ready',token}|denied|error|unsupported`), `onNativePushMessage()` (`pushNotificationReceived`), `onNativePushActionPerformed()` (`pushNotificationActionPerformed`), `unregisterNativePush()`, `shouldUseNativePush()`. Maps Capacitor `PushNotificationSchema` → app `Notification` (data `{id,type,link,createdAt}`).
+- [x] `src/services/fcm/useFcmPush.tsx` — `FcmPushProvider` branches: native → `registerForNativePush()` → register token with backend (`notificationService.registerDeviceToken(token, platform)` with platform `android`/`ios`) → wire native message + action listeners → `dispatch(addNotification)`; tap with `link` navigates via `window.location.href`. Web path (Firebase gate + `fcmService.init()` + `onMessage`) unchanged.
+- [x] Verified `npx tsc --noEmit` exit 0 (v8 API: event names `pushNotificationReceived`/`pushNotificationActionPerformed`, `PluginListenerHandle` from `@capacitor/core`).
+
+### Notes
+- Android native push requires `google-services.json` (FCM) placed in `android/app/` (Phase 11/12 doc); without it `register()` resolves `error` gracefully.
+- iOS native push requires APNs entitlement in Xcode (Capability); documented in CAPACITOR_SETUP.md.
+- Web FCM service worker remains the web path; no changes to `fcm.service.ts` (web-only).
+
+## Phase 4: Camera Native Plugin — COMPLETE (2026-09-17)
+
+### Completed (2026-09-17)
+- [x] `src/services/native/camera.ts` (NEW) — reusable abstractions: `takePicture()` (native `Camera.takePhoto`, web `<input type=file>`), `pickFromGallery()` (native `Camera.chooseFromGallery` w/ `MediaTypeSelection.Photo`, web file input), `pickPhotoFromGallery()`, `mediaToFormData()`. Returns `PickedMedia { file, webPath, mimeType, format }`; `CameraPickError { reason: denied|cancelled|unavailable|error }`. Native media resolved via `fetch(uri|webPath)` → Blob → `File`; thumbnail fallback.
+- [x] `src/components/ui/ImagePicker.tsx` (NEW) — reusable photo picker: preview (with remove), Camera + Gallery buttons, loading state, toast per `CameraPickError`. Uses app Button + useToast design system.
+- [x] Verified `npx tsc --noEmit` exit 0 (fixed `MediaTypeSelection` import).
+
+### Notes
+- App has NO existing camera/upload UI (profile photo / leave attachments not yet wired) — abstraction is ready for future consumers; CSV import (existing upload) untouched.
+- Camera v8 API: `takePhoto`/`chooseFromGallery` native-first; deprecated `getPhoto` avoided.
+
+## Phase 3: Geolocation Native Plugin — COMPLETE (2026-09-17)
+
+### Completed (2026-09-17)
+- [x] `src/services/native/location.ts` (NEW) — `GeolocationResult` (moved here to avoid FE type circular import with `location.service.ts`), `getCurrentNativePosition()` (check → request → get via `@capacitor/geolocation`; `enableHighAccuracy`/`timeout`/`maximumAge` from `config.location`), `checkLocationPermissions()`, `requestLocationPermissions()`, `LocationPermState`/`LocationPermissionState` (maps `prompt-with-rationale` → `prompt`). `NativeLocationError` w/ `LocationStatus`; denied → `PERMISSION_DENIED`, other failures → `UNAVAILABLE`.
+- [x] `src/services/location.service.ts` — `getCurrentPosition()` branches: native → `getCurrentNativePosition()` (maps `NativeLocationError` → `LocationApiError`), web → existing `navigator.geolocation` path unchanged. Re-exports `GeolocationResult`. Callers (`LocationVerification`, `CheckOutSheet`, attendance slice) untouched.
+- [x] Verified `npx tsc --noEmit` exit 0 (fixed `PermissionStatus` coarseLocation/prompt-with-rationale typing).
+
+---
+
+## Phase 1: Capacitor Install & Configure — COMPLETE (2026-09-17)
+
+> User prompt: convert React.js app to Capacitor mobile app (Android + iOS). Phase plan approved — 13 phases; memory bank updated after each. Verified: `npm run build` exit 0, `npx cap sync` exit 0, both platforms added.
+
+### Completed (2026-09-17)
+- [x] Installed `@capacitor/core@8.x`, `@capacitor/cli@8.x` (dev), `@capacitor/android@8.x`, `@capacitor/ios@8.x`, plus plugins: `@capacitor/camera`, `@capacitor/geolocation`, `@capacitor/push-notifications`, `@capacitor/preferences`, `@capacitor/network`, `@capacitor/app`, `@capacitor/keyboard`, `@capacitor/status-bar`, `@capacitor/splash-screen`.
+- [x] `capacitor.config.ts` (NEW) — `appId: com.webetechies.staffflow`, `appName: StaffFlow`, `webDir: dist`, `server.androidScheme: "https"` (CORS-safe on Android), plugin configs: SplashScreen (#00a884, 2s, CENTER_CROP, fullscreen, immersive), StatusBar (DARK, #00a884, overlaysWebView), Keyboard (resize: body, DARK).
+- [x] `npx cap add android` → `android/` project (9 plugins registered).
+- [x] `npx cap add ios` → `ios/` project (9 plugins registered, Package.swift written).
+- [x] `.gitignore` — added `android/`, `ios/`, `.capacitor/`; added `!.env.example` exception.
+- [x] `npm run build` exit 0 (tsc + vite; pre-existing chunk-size warning only).
+- [x] `npx cap sync` exit 0 (web assets copied to both platforms).
+
+### Notes
+- `dist/` is the web build dir (Vite default); `androidScheme: "https"` keeps the WebView origin CORS-compatible.
+- iOS/CocoaPods + Android Studio not opened (Windows dev machine; `npx cap open` is a macOS/Xcode + Android Studio step, documented in CAPACITOR_SETUP.md Phase 12).
+- PWA service worker still registers in WebView too — reviewed; Firebake FCM SW is required for web push; SW registration in Capacitor is harmless (file/http origin), will gate on native in Phase 5.
+
+---
+
 ## Session 2026-09-17: Demo login restore (rahul@attendflow.in) — COMPLETE
 
 > User prompt: demo account login getting "Invalid email or password". Root cause: frontend quick-demo pre-fills `rahul@attendflow.in` (LoginPage.tsx:12), but that user was gone — backend re-seed now emits 60 employees as `emp001@attendflow.in`–`emp060@attendflow.in` and Rahul only existed as `emp001@attendflow.in`. Verified against live API: `rahul@attendflow.in`/`password` → 401 `INVALID_CREDENTIALS`.

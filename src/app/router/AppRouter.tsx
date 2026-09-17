@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router";
+import NativeChrome from "@/components/native/NativeChrome";
 import { useAppSelector } from "@/hooks/useRedux";
 import { Role } from "@/types/enums";
 import LoginPage from "@/pages/auth/LoginPage";
@@ -70,6 +71,7 @@ function AdminNotificationsGate() {
 export default function AppRouter() {
   return (
     <BrowserRouter>
+      <NativeChrome />
       <SessionBootstrap>
         <Routes>
         <Route path="/login" element={<LoginPage />} />

@@ -1,3 +1,5 @@
+import { storageGet, storageRemove, storageSet } from "@/services/storage";
+
 const ACCESS_TOKEN_KEY = "attendflow.access-token";
 const REFRESH_TOKEN_KEY = "attendflow.refresh-token";
 
@@ -8,52 +10,34 @@ export interface SessionTokens {
   refreshToken: string;
 }
 
-function readStored(key: string): string | null {
-  try {
-    return window.localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function writeStored(key: string, value: string): void {
-  try {
-    window.localStorage.setItem(key, value);
-  } catch {
-    // storage unavailable (private mode / quota) — session stays in-memory
-  }
-}
-
-function removeStored(key: string): void {
-  try {
-    window.localStorage.removeItem(key);
-  } catch {
-    // ignore
-  }
-}
-
 export const session = {
-  getAccessToken(): string | null {
-    return readStored(ACCESS_TOKEN_KEY);
+  async getAccessToken(): Promise<string | null> {
+    return storageGet(ACCESS_TOKEN_KEY);
   },
-  getRefreshToken(): string | null {
-    return readStored(REFRESH_TOKEN_KEY);
+  async getRefreshToken(): Promise<string | null> {
+    return storageGet(REFRESH_TOKEN_KEY);
   },
-  getTokens(): SessionTokens | null {
-    const accessToken = readStored(ACCESS_TOKEN_KEY);
-    const refreshToken = readStored(REFRESH_TOKEN_KEY);
+  async getTokens(): Promise<SessionTokens | null> {
+    const [accessToken, refreshToken] = await Promise.all([
+      storageGet(ACCESS_TOKEN_KEY),
+      storageGet(REFRESH_TOKEN_KEY),
+    ]);
     return accessToken && refreshToken ? { accessToken, refreshToken } : null;
   },
-  setTokens(tokens: SessionTokens): void {
-    writeStored(ACCESS_TOKEN_KEY, tokens.accessToken);
-    writeStored(REFRESH_TOKEN_KEY, tokens.refreshToken);
+  async setTokens(tokens: SessionTokens): Promise<void> {
+    await Promise.all([
+      storageSet(ACCESS_TOKEN_KEY, tokens.accessToken),
+      storageSet(REFRESH_TOKEN_KEY, tokens.refreshToken),
+    ]);
   },
-  setAccessToken(accessToken: string): void {
-    writeStored(ACCESS_TOKEN_KEY, accessToken);
+  async setAccessToken(accessToken: string): Promise<void> {
+    await storageSet(ACCESS_TOKEN_KEY, accessToken);
   },
-  clear(): void {
-    removeStored(ACCESS_TOKEN_KEY);
-    removeStored(REFRESH_TOKEN_KEY);
+  async clear(): Promise<void> {
+    await Promise.all([
+      storageRemove(ACCESS_TOKEN_KEY),
+      storageRemove(REFRESH_TOKEN_KEY),
+    ]);
   },
 };
 

@@ -4,6 +4,14 @@ import { useAppDispatch, useAppSelector } from "@/hooks/useRedux";
 import { addNotification } from "@/store/slices/notificationSlice";
 import { isFirebaseConfigured } from "@/config/firebase";
 import { fcmService } from "./fcm.service";
+import { isNativePlatform, getPlatform } from "@/services/native/platform";
+import {
+  registerForNativePush,
+  onNativePushMessage,
+  onNativePushActionPerformed,
+  unregisterNativePush,
+} from "@/services/native/notifications";
+import { notificationService } from "@/services/notification.service";
 import type { Notification } from "@/types";
 
 function payloadToNotification(payload: MessagePayload): Notification {
@@ -27,15 +35,37 @@ export function FcmPushProvider() {
 
   useEffect(() => {
     if (!isAuthenticated || !user?.id || wiredUser.current === user.id) return;
-    if (!isFirebaseConfigured()) return;
 
     let disposed = false;
     let unsubscribe: (() => void) | null = null;
     wiredUser.current = user.id;
 
     const boot = async (): Promise<void> => {
-      const result = await fcmService.init();
-      if (disposed || result.status !== "ready") return;
+      if (isNativePlatform()) {
+        const result = await registerForNativePush();
+        if (disposed || result.status !== "ready") return;
+        const platform = getPlatform();
+        try {
+          await notificationService.registerDeviceToken(result.token, platform);
+        } catch {
+          // backend registration best-effort
+        }
+        onNativePushMessage((notification) => {
+          dispatch(addNotification(notification));
+        });
+        onNativePushActionPerformed((notification) => {
+          dispatch(addNotification(notification));
+          if (notification.link) {
+            window.location.href = notification.link;
+          }
+        });
+        return;
+      }
+
+      if (!isFirebaseConfigured()) return;
+
+      const fcmResult = await fcmService.init();
+      if (disposed || fcmResult.status !== "ready") return;
       unsubscribe = fcmService.onMessage((payload) => {
         dispatch(addNotification(payloadToNotification(payload)));
       });
@@ -47,7 +77,11 @@ export function FcmPushProvider() {
       disposed = true;
       wiredUser.current = null;
       unsubscribe?.();
-      void fcmService.stop();
+      if (isNativePlatform()) {
+        void unregisterNativePush();
+      } else {
+        void fcmService.stop();
+      }
     };
   }, [dispatch, isAuthenticated, user]);
 

@@ -30,7 +30,7 @@ export const loginUser = createAsyncThunk(
 
     try {
       const result = await authApi.login(email, credentials.password);
-      session.setTokens({ accessToken: result.token, refreshToken: result.refreshToken });
+      await session.setTokens({ accessToken: result.token, refreshToken: result.refreshToken });
       const employee = await employeeApi.getMe();
       const user: User = {
         id: employee.id,
@@ -55,13 +55,14 @@ type BootstrapResult =
 export const bootstrapSession = createAsyncThunk<BootstrapResult, void>(
   "auth/bootstrap",
   async (_, { rejectWithValue }) => {
-    if (!session.getTokens()) {
+    const tokens = await session.getTokens();
+    if (!tokens) {
       return { restored: false };
     }
     try {
       const block = await authApi.me();
       const employee = await employeeApi.getMe();
-      const token = session.getAccessToken();
+      const token = await session.getAccessToken();
       const user: User = {
         id: employee.id,
         email: employee.email,
@@ -73,14 +74,14 @@ export const bootstrapSession = createAsyncThunk<BootstrapResult, void>(
       };
       return { restored: true, user, token };
     } catch (error) {
-      session.clear();
+      await session.clear();
       return rejectWithValue(getErrorMessage(error));
     }
   },
 );
 
 export const logoutUser = createAsyncThunk("auth/logout", async () => {
-  const refreshToken = session.getRefreshToken();
+  const refreshToken = await session.getRefreshToken();
   if (refreshToken) {
     try {
       await authApi.logout(refreshToken);
@@ -88,7 +89,7 @@ export const logoutUser = createAsyncThunk("auth/logout", async () => {
       // best-effort server revoke
     }
   }
-  session.clear();
+  await session.clear();
 });
 
 function resetAuthState(state: AuthState) {

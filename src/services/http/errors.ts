@@ -22,6 +22,7 @@ export type ApiErrorCode =
   | "OTP_ATTEMPTS_EXCEEDED"
   | "USER_NOT_FOUND"
   | "MAIL_SEND_FAILED"
+  | "DEVICE_SESSION_BLOCKED"
   | "NOT_IMPLEMENTED"
   | "NETWORK"
   | "UNKNOWN";

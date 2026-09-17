@@ -84,4 +84,7 @@ export const API = {
     list: "/announcements",
     byId: (id: string) => `/announcements/${id}`,
   },
+  app: {
+    version: "/app/version",
+  },
 } as const;

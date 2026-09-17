@@ -1,7 +1,65 @@
 # StaffFlow — Active Context
 
+## Single Device Login per Day — IMPLEMENTED (2026-09-17, spans web + Capacitor)
+Feature flag on backend: one account per device per day. Frontend (this repo) sends `X-Device-Id`
+on EVERY request via the axios request interceptor (`src/services/http/request.ts`), sourced from
+`src/services/device.service.ts` (NEW) — a UUID stored once via the storage abstraction
+(`localStorage` web / `@capacitor/preferences` native) under `attendflow.device-id`, single-flight
+init, intentionally NEVER cleared on logout. `DEVICE_SESSION_BLOCKED` added to the FE
+`ApiErrorCode` union (`src/services/http/errors.ts`) so the backend 403 surfaces through the
+existing login error path. Backend counterpart: NestJS `DeviceSession` model + config flags
+(see backend memory-bank). When the flag is off, the header is harmless.
+
 ## Current Focus
-**PWA implementation COMPLETED (2026-09-16).** StaffFlow is now an installable, standalone, offline-app-shell PWA via `vite-plugin-pwa@1.3.0` (`injectManifest`). The single service worker (`src/firebase-messaging-sw.ts` → `dist/firebase-messaging-sw.js`) merges Workbox precaching + SPA navigation fallback with the FCM background-push handler, so background push notifications keep working (same `/firebase-messaging-sw.js?config=…` registration URL — no scope conflict). Registered unconditionally on `window.load` via `ensurePwaSw()` in `main.tsx`. Icons generated from `public/logo.svg`. Manifest: name/short_name **StaffFlow**, `#00a884` theme/background, `display: standalone`. `theme-color` in `index.html` updated `#4F46E5` → `#00a884`. `npx tsc --noEmit` + `npm run build` exit 0; preview smoke passed. Offline = app shell only (cross-origin API untouched; fonts not precached).
+**Capacitor mobile migration COMPLETE (2026-09-17).** All 13 phases done: capacitor core + android/ios projects (1), platform detection + version (2), native geolocation (3), camera abstraction + ImagePicker (4), native push (5), secure storage (6), force update (7), back button + status bar + splash (8), network + keyboard (9), deep linking (10), permissions (11), build scripts + .env/.env.example + CAPACITOR_SETUP.md (12), memory bank (13). `npx tsc --noEmit` + `npm run build` + `npx cap sync` all exit 0. Remaining manual/ops items: branded icons (`npx @capacitor/assets generate`), google-services.json for FCM, iOS APNs entitlement, App/Universal link verification, Android release keystore — all documented in CAPACITOR_SETUP.md.
+
+## Phase 13 COMPLETE (2026-09-17 — memory bank)
+Updated `02-active-context.md`, `04-tech-context.md`, `05-progress-log.md`.
+
+## Phase 12 COMPLETE (2026-09-17 — build scripts, setup docs)
+`package.json` scripts added: `cap:sync` (build + sync), `cap:android`/`cap:ios` (build+sync+open), `cap:run:android`/`cap:run:ios`, `cap:doctor`. `.env.example` created (VITE_APP_NAME, VITE_API_BASE_URL, VITE_GOOGLE_MAPS_API_KEY, VITE_FIREBASE_* keys). `CAPACITOR_SETUP.md` (NEW) — prerequisites, daily workflow, capacitor.config mapping, push setup (google-services.json / APNs), camera/gallery/location strings, icon/splash generation, deep-link setup (staffflow:// + App Links + Universal Links), force-update endpoint contract, release gotchas. `.gitignore` already covers android/, ios/, .capacitor/, `!.env.example`.
+
+## Phase 11 COMPLETE (2026-09-17 — permissions configuration)
+Android `AndroidManifest.xml` — added `ACCESS_COARSE_LOCATION`, `ACCESS_FINE_LOCATION`, `CAMERA`, `POST_NOTIFICATIONS` + non-required `<uses-feature>` camera/gps. iOS `Info.plist` — added `NSCameraUsageDescription`, `NSPhotoLibraryUsageDescription`, `NSLocationWhenInUseUsageDescription` (previously absent — would crash on native camera/location use).
+
+## Phase 10 COMPLETE (2026-09-17 — deep linking)
+`src/services/native/deep-link.ts` (NEW) — `parseDeepLink()` (pathname+search), `getLaunchUrl()` (`App.getLaunchUrl` — cold start), `subscribeDeepLinks()`. `NativeChrome.tsx` navigates via React Router on both cold start and `appUrlOpen`. Android `AndroidManifest.xml` — VIEW intent filters: `https://app.staffflow.com` (autoVerify) + `staffflow://open`. iOS `Info.plist` — `CFBundleURLTypes` (staffflow scheme).
+
+## Phase 9 COMPLETE (2026-09-17 — network + keyboard)
+`src/services/native/network.ts` (NEW) — `getConnectivity()` + `subscribeConnectivity()` via @capacitor/network (web fallback `navigator.onLine`). `src/components/native/OfflineBanner.tsx` (NEW) — sticky `bg-danger` banner (safe-area-top) shown when native-only connectivity reports offline. Keyboard handled declaratively in `capacitor.config.ts` (resize: body, DARK) — no runtime code needed.
+
+## Phase 8 COMPLETE (2026-09-17 — back button, status bar, splash)
+`src/services/native/back-button.ts` (NEW) — `subscribeBackButton()` (`App.addListener('backButton')`; canGoBack → `window.history.back()` else `window.confirm` exit) + `exitApp()`. `src/hooks/useBackButton.ts` (NEW) — mounts/unmounts the listener. `src/components/native/NativeChrome.tsx` (NEW) — mounts inside `<BrowserRouter>` (AppRouter) ONCE for all screens: useBackButton + runtime StatusBar (#00a884, Style.Dark) + OfflineBanner (added Phase 9). Splash screen already configured in capacitor.config.ts.
+
+## Phase 7 COMPLETE (2026-09-17 — app version + force update)
+`src/services/native/force-update.ts` (NEW) — `checkForForceUpdate()`: native-only; `getAppVersion()` vs backend `GET {api}/app/version` (`{android:{minimumVersion,latestVersion,forceUpdate,storeUrl}, ios:{…}}`); `compareVersions()`; `openStore()`. Endpoint added: `API.app.version = "/app/version"`. `src/components/native/ForceUpdateScreen.tsx` (NEW) — full-screen block (current vs latest versions, Update Now → store). `src/components/native/ForceUpdateGate.tsx` (NEW) — mounted in `main.tsx` around AppRouter; shows gate only if `forceUpdate`. Missing endpoint/non-native → skipped silently.
+
+## Phase 6 COMPLETE (2026-09-17 — secure storage abstraction)
+`src/services/storage/secure-storage.ts` (NEW) — `storageGet/Set/Remove`: native → `@capacitor/preferences`, web → `localStorage` (try/catch guards). `src/services/storage/index.ts` barrel. `session.ts` rewritten ASYNC (`getAccessToken/getRefreshToken/getTokens/setTokens/setAccessToken/clear` all Promise-based; same keys `attendflow.access-token`/`attendflow.refresh-token`). `request.ts` — request interceptor now async; `doRefresh()` awaits getTokens/setTokens/clear. `authSlice.ts` — all session calls awaited.
+
+## Phase 1 COMPLETE (2026-09-17 — Capacitor core)
+Installed @capacitor/core@8, @capacitor/cli@8, @capacitor/android, @capacitor/ios + camera/geolocation/push-notifications/preferences/network/app/keyboard/status-bar/splash-screen. Created `capacitor.config.ts` (`androidScheme: "https"`, SplashScreen #00a884, StatusBar DARK, Keyboard resize:body). `npx cap add android` + `npx cap add ios` succeeded on Windows (both native projects generated). `.gitignore` now ignores `android/`, `ios/`, `.capacitor/`, keeps `!.env.example`. `npm run build` + `npx cap sync` exit 0.
+
+## Phase 2 COMPLETE (2026-09-17 — platform detection + version)
+`src/services/native/platform.ts` (`isNativePlatform/isAndroid/isIOS/isWeb/getPlatform` via `@capacitor/core` `Capacitor`), `src/services/native/version.ts` (`getAppVersion()` → AppVersionInfo; native `App.getInfo()`, web `config.version`). Barrel `src/services/native/index.ts` deferred until all modules exist (Phase 7).
+
+## Phase 3 COMPLETE (2026-09-17 — geolocation native plugin)
+`src/services/native/location.ts` (`getCurrentNativePosition()`, `checkLocationPermissions()`, `requestLocationPermissions()`, `NativeLocationError`, own `GeolocationResult` to avoid FE circular import). `src/services/location.service.ts` now branches: native → Capacitor Geolocation, web → existing `navigator.geolocation`. No caller changes (LocationVerification/CheckOutSheet/attendance slice untouched). Permissions mapped (`prompt-with-rationale` → `prompt`).
+
+## Phase 4 COMPLETE (2026-09-17 — camera native plugin)
+`src/services/native/camera.ts` (`takePicture`, `pickFromGallery`, `pickPhotoFromGallery`, `mediaToFormData`, `PickedMedia`, `CameraPickError`; native Camera v8 `takePhoto`/`chooseFromGallery`, web `<input type=file>` fallback; `fetch(uri)` → Blob → File). `src/components/ui/ImagePicker.tsx` (preview + Camera/Gallery buttons + toasts). App has no live camera UI yet — abstraction ready for future consumers.
+
+## Phase 5 COMPLETE (2026-09-17 — push notifications native plugin)
+`src/services/native/notifications.ts` (`registerForNativePush` single-flight, `onNativePushMessage`/`onNativePushActionPerformed`, `unregisterNativePush`, `shouldUseNativePush`; Capacitor `pushNotificationReceived`/`pushNotificationActionPerformed` events; schema→app `Notification` mapping). `useFcmPush.tsx` branches: native → register + backend token (`android`/`ios`) + listeners with tap→link nav; web → existing FCM SW flow. `fcm.service.ts` untouched (web-only). Android needs google-services.json + iOS needs APNs entitlement for real token delivery (documented).
+
+## Active Decisions
+- **BrowserRouter kept** — verified compatible with Capacitor WebView (local HTTP server); no HashRouter switch (user decision).
+- **Native push added alongside web FCM** — @capacitor/push-notifications for Android (FCM) / iOS (APNs); web FCM untouched for browsers (user decision).
+- **@capacitor/preferences for token storage** — native key-value preference store replaces localStorage on device; localStorage fallback on web (user decision).
+- **Full camera implementation now** — reusable `src/services/native/camera.ts` abstraction with web `<input type=file>` fallback (user decision).
+- **@react-google-maps/api kept** — JS-based maps work in Capacitor WebView; no @capacitor/google-maps rewrite (user decision).
+
+--- StaffFlow is now an installable, standalone, offline-app-shell PWA via `vite-plugin-pwa@1.3.0` (`injectManifest`). The single service worker (`src/firebase-messaging-sw.ts` → `dist/firebase-messaging-sw.js`) merges Workbox precaching + SPA navigation fallback with the FCM background-push handler, so background push notifications keep working (same `/firebase-messaging-sw.js?config=…` registration URL — no scope conflict). Registered unconditionally on `window.load` via `ensurePwaSw()` in `main.tsx`. Icons generated from `public/logo.svg`. Manifest: name/short_name **StaffFlow**, `#00a884` theme/background, `display: standalone`. `theme-color` in `index.html` updated `#4F46E5` → `#00a884`. `npx tsc --noEmit` + `npm run build` exit 0; preview smoke passed. Offline = app shell only (cross-origin API untouched; fonts not precached).
 
 ## Demo login restored (2026-09-17)
 The "Rahul" demo account (default pre-filled on `LoginPage.tsx` with `rahul@attendflow.in` / `password`) returned **"Invalid email or password"** because that user no longer existed in the backend DB — `prisma/seed.ts` was re-seeded at some point to generate 60 employees as `emp001@attendflow.in`–`emp060@attendflow.in`, so Rahul only existed as `emp001@attendflow.in` (EMP1001). `priya@attendflow.in` / `admin@attendflow.in` still worked.

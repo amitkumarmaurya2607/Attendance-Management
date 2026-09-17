@@ -9,6 +9,7 @@ import { config } from "@/config";
 import { API } from "./endpoints";
 import { toApiError } from "./errors";
 import { notifySessionExpired, session } from "./session";
+import { DEVICE_ID_HEADER, getDeviceId } from "@/services/device.service";
 
 export interface RequestOptions {
   headers?: Record<string, string>;
@@ -40,18 +41,26 @@ const instance: AxiosInstance = axios.create({
   },
 });
 
-instance.interceptors.request.use((reqConfig: InternalAxiosRequestConfig) => {
-  const token = session.getAccessToken();
-  if (token && reqConfig.headers) {
-    (reqConfig.headers as AxiosHeaders).set("Authorization", `Bearer ${token}`);
-  }
-  return reqConfig;
-});
+instance.interceptors.request.use(
+  async (reqConfig: InternalAxiosRequestConfig) => {
+    const [token, deviceId] = await Promise.all([
+      session.getAccessToken(),
+      getDeviceId(),
+    ]);
+    if (reqConfig.headers) {
+      if (token) {
+        (reqConfig.headers as AxiosHeaders).set("Authorization", `Bearer ${token}`);
+      }
+      (reqConfig.headers as AxiosHeaders).set(DEVICE_ID_HEADER, deviceId);
+    }
+    return reqConfig;
+  },
+);
 
 let refreshPromise: Promise<boolean> | null = null;
 
 async function doRefresh(): Promise<boolean> {
-  const tokens = session.getTokens();
+  const tokens = await session.getTokens();
   if (!tokens) return false;
 
   try {
@@ -61,10 +70,10 @@ async function doRefresh(): Promise<boolean> {
       { baseURL: config.apiBaseUrl, timeout: DEFAULT_TIMEOUT_MS },
     );
     const body = unwrapEnvelope<RefreshResponse>(response.data);
-    session.setTokens({ accessToken: body.token, refreshToken: body.refreshToken });
+    await session.setTokens({ accessToken: body.token, refreshToken: body.refreshToken });
     return true;
   } catch {
-    session.clear();
+    await session.clear();
     notifySessionExpired();
     return false;
   }
@@ -98,7 +107,7 @@ instance.interceptors.response.use(
       const refreshed = await refreshTokens();
       if (refreshed) {
         original._retried = true;
-        const token = session.getAccessToken();
+        const token = await session.getAccessToken();
         if (token && original.headers) {
           (original.headers as AxiosHeaders).set("Authorization", `Bearer ${token}`);
         }
